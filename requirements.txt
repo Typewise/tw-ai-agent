@@ -10,3 +10,4 @@ python-dotenv>=1.0.0
 httpx>=0.25.0
 openai>=1.10.0
 langchain-openai>=0.0.5 
+langgraph-prebuilt>=0.0.1 

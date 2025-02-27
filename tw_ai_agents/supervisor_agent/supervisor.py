@@ -18,7 +18,8 @@ from langgraph.prebuilt.chat_agent_executor import (
     create_react_agent,
 )
 from langgraph.utils.runnable import RunnableCallable
-from langgraph.prebuilt.tool_executor import ToolExecutor
+from langgraph.prebuilt.tool_node import ToolNode
+# from langgraph.prebuilt.tool_executor import ToolExecutor
 
 from tw_ai_agents.supervisor_agent.handoff import (
     create_handoff_tool,
@@ -41,13 +42,13 @@ def _make_call_agent(
     supervisor_name: str,
 ) -> Callable[[Dict], Dict]:
     """Create a function that calls an agent and processes its output.
-    
+
     Args:
         agent: The agent to call.
         output_mode: How to handle the agent's message history.
         add_handoff_back_messages: Whether to add handoff back messages.
         supervisor_name: The name of the supervisor agent.
-        
+
     Returns:
         A callable that invokes the agent and processes its output.
     """
@@ -71,7 +72,8 @@ def _make_call_agent(
 
         if add_handoff_back_messages:
             # Add handoff back messages using AIMessage and HumanMessage
-            messages.extend(create_handoff_back_messages(agent.name, supervisor_name))
+            messages.extend(create_handoff_back_messages(
+                agent.name, supervisor_name))
 
         return {
             **output,
@@ -119,7 +121,7 @@ def create_supervisor(
         add_handoff_back_messages: Whether to add a pair of (AIMessage, ToolMessage) to the message history
             when returning control to the supervisor to indicate that a handoff has occurred.
         supervisor_name: Name of the supervisor node.
-        
+
     Returns:
         A StateGraph representing the supervisor agent system.
     """
@@ -138,7 +140,8 @@ def create_supervisor(
 
         agent_names.add(agent.name)
 
-    handoff_tools = [create_handoff_tool(agent_name=agent.name) for agent in agents]
+    handoff_tools = [create_handoff_tool(
+        agent_name=agent.name) for agent in agents]
     all_tools = (tools or []) + handoff_tools
     # all_tools = handoff_tools
     if (
@@ -148,8 +151,8 @@ def create_supervisor(
         model = model.bind_tools(all_tools, parallel_tool_calls=False)
 
     # Convert tools to the expected format if needed
-    tool_executor = ToolExecutor(all_tools) if all_tools else None
-    
+    tool_executor = ToolNode(all_tools) if all_tools else None
+
     supervisor_agent = create_react_agent(
         name=supervisor_name,
         model=model,
@@ -173,4 +176,4 @@ def create_supervisor(
         )
         builder.add_edge(agent.name, supervisor_agent.name)
 
-    return builder 
+    return builder
