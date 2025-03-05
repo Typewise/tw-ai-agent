@@ -26,17 +26,47 @@ from tw_ai_agents.agents.tools.tools import (
 from tw_ai_agents.agents.tools.human_tools import (
     real_human_agent_execute_actions,
     handoff_conversation_to_real_agent,
+    get_ask_to_user_tool,
 )
 
 # Load environment variables
 load_dotenv()
 
 
+async def writer_function(prompt_input: dict, query: str) -> str:
+    """
+    Function to improve writing of the user-facing message using channel-specific instructions.
+    """
+    langchain_prompt_model = hub.pull(
+        "agent-writing_instructions", include_model=True
+    )
+    input_dict = {
+        **prompt_input,
+        "query": query,
+    }
+    response = await langchain_prompt_model.ainvoke(input=input_dict)
+    return response.content
+
+
 def get_complete_graph(
     model, configs: dict, memory, channel_type_id: str
 ) -> TWSupervisor:
     """Test the orchestrator system with a simple query."""
+    # Load channel configs
+    correct_channel = next(
+        (
+            channel
+            for channel in configs["channels"]
+            if channel["channelTypeId"] == channel_type_id
+        ),
+        None,
+    )
+    if correct_channel is None:
+        raise ValueError("Channel type not found in the configuration data.")
+    channel_type = correct_channel["channelType"]["name"]
+    channel_rules = correct_channel["instructions"]["text"]
 
+    # Load share tools
     supervisor_tools = []
     subagents_list = []
     shared_agents = [
@@ -52,11 +82,22 @@ def get_complete_graph(
             memory=memory,
         ),
     ]
+
+    writer_function_input = {
+        "channel_type": channel_type,
+        "channel_rules": channel_rules,
+    }
     shared_tools = [
         handoff_conversation_to_real_agent,
         real_human_agent_execute_actions,
+        get_ask_to_user_tool(
+            lambda query: asyncio.run(
+                writer_function(writer_function_input, query)
+            )
+        ),
     ]
 
+    # Load Sub-agents
     for config in configs["caseCategories"]:
         description = config["description"]
         name = _normalize_agent_name(config["name"])
@@ -97,19 +138,6 @@ def get_complete_graph(
         )
 
     # Main Supervisor
-    correct_channel = next(
-        (
-            channel
-            for channel in configs["channels"]
-            if channel["channelTypeId"] == channel_type_id
-        ),
-        None,
-    )
-    if correct_channel is None:
-        raise ValueError("Channel type not found in the configuration data.")
-    channel_type = correct_channel["channelType"]["name"]
-    channel_rules = correct_channel["instructions"]["text"]
-
     starting_supervisor_prompt = hub.pull("tw-supervisor-system-prompt")
     final_supervisor_prompt = starting_supervisor_prompt.format(
         agents="- "

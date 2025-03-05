@@ -23,7 +23,10 @@ from tw_ai_agents.agents.message_types.base_message_type import (
     State,
     ToolMessageInfo,
 )
-from tw_ai_agents.agents.tools.human_tools import COMPLETE_HANDOFF_STRING
+from tw_ai_agents.agents.tools.human_tools import (
+    COMPLETE_HANDOFF_STRING,
+    ASK_USER_TOOL_NAME,
+)
 
 conn = sqlite3.connect("checkpoints.sqlite")
 memory = SqliteSaver(conn)
@@ -239,7 +242,6 @@ class TWSupervisor:
                 raise ValueError(
                     f"Expected ToolMessageInfo object, got {type(tool_message_info)}"
                 )
-            a = 1
             # Filter out our sub-agents from the tool call list.
             # The ones whose name starts with SUBAGENT_TOOL_NAME_PREFIX
             if (
@@ -247,8 +249,8 @@ class TWSupervisor:
                 and not tool_message_info.name.startswith(
                     SUBAGENT_TOOL_NAME_PREFIX
                 )
+                and tool_message_info.name != ASK_USER_TOOL_NAME
             ):
-                a = 1
                 tool_calls.append(
                     {
                         "tool_name": tool_message_info.name,
