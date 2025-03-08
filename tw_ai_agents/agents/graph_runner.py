@@ -28,7 +28,11 @@ class GraphRunner:
 
         result = None
         last_message = None
-        while last_message is None or isinstance(last_message, ToolMessage):
+        i = 0
+
+        while (
+            last_message is None or isinstance(last_message, ToolMessage)
+        ) and i < 5:
             # While loop because when the supervisor decides to call a sub-agent, it will return a tool message.
             # We need to call the graph again and the router will sort the case to the correct sub-agent.
 
@@ -39,6 +43,8 @@ class GraphRunner:
                 result = self._process_output_chunk(chunk, result)
 
                 last_message = result["messages"][-1]
+
+            i += 1
 
         if result is None:
             raise ValueError("No output from the graph execution")
@@ -106,7 +112,7 @@ class GraphRunner:
                 "ns": chunk["__interrupt__"][0].ns,
                 "target_entity": interrupt_content.destination,
                 "complete_handoff": COMPLETE_HANDOFF_STRING
-                == new_message.content, # Legacy, will be removed
+                == new_message.content,  # Legacy, will be removed
                 "agent_message_mode": interrupt_content.agent_message_mode.value,
             }
             result["messages"].append(new_message)
