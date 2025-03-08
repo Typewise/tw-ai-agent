@@ -11,15 +11,16 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.types import Command
 
+from tw_ai_agents.agents.graph_creator_router_supervisor import (
+    get_complete_graph_router_supervisor,
+    get_input_configs,
+)
+from tw_ai_agents.agents.graph_runner import GraphRunner
 from tw_ai_agents.agents.llm_models_loader import load_chat_model, get_llm_model
 from tw_ai_agents.instruction_optimizer.instruction_optimizer import (
     InstructionOptimizationRequest,
     InstructionOptimizationResponse,
     optimize_instruction,
-)
-from tw_ai_agents.agents.graph_creator import (
-    get_complete_graph,
-    get_input_configs,
 )
 import time
 from tw_ai_agents.config_handler.constants import DB_CHECKPOINT_PATH
@@ -103,7 +104,7 @@ def process_agent_response(
     #     async with AsyncSqliteSaver.from_conn_string(
     #         DB_CHECKPOINT_PATH
     #     ) as saver:
-    #         supervisor = get_complete_graph(
+    #         supervisor = get_complete_graph_router_supervisor(
     #             model,
     #             input_configs,
     #             memory=saver,
@@ -111,7 +112,26 @@ def process_agent_response(
     #         )
     #         config = {"configurable": {"thread_id": request.discussion_id}}
     #
-    #         return await supervisor.arun_supervisor(initial_state, config)
+    #         if message_type == "agent":
+    #             # either from agent or the graph is in an interrupt state
+    #             initial_state = Command(
+    #                 resume=request.message_text,
+    #             )
+    #         elif message_type == "user":
+    #             message = HumanMessage(content=request.message_text)
+    #             initial_state = {
+    #                 "messages": [message],
+    #                 "metadata": {"discussion_id": request.discussion_id},
+    #                 "remaining_steps": 10,
+    #             }
+    #         else:
+    #             raise ValueError(
+    #                 "Invalid message type. Please use 'user' or 'agent'."
+    #             )
+    #
+    #         return GraphRunner(supervisor).arun_supervisor(
+    #             initial_state, config
+    #         )
     #
     # # Run the supervisor with proper State object
     # response = asyncio.run(run_supervisor_with_graph())
@@ -119,7 +139,7 @@ def process_agent_response(
     def run_supervisor_with_graph():
         with SqliteSaver.from_conn_string(DB_CHECKPOINT_PATH) as saver:
             start_time = time.time()
-            supervisor = get_complete_graph(
+            supervisor = get_complete_graph_router_supervisor(
                 model,
                 input_configs,
                 memory=saver,
@@ -128,12 +148,7 @@ def process_agent_response(
             print(f"Graph creation time: {time.time() - start_time}")
             config = {"configurable": {"thread_id": request.discussion_id}}
 
-            next_state = (
-                supervisor.get_supervisor_compiled_graph()
-                .get_state(config)
-                .next
-            )
-            if message_type == "agent" or next_state:
+            if message_type == "agent":
                 # either from agent or the graph is in an interrupt state
                 initial_state = Command(
                     resume=request.message_text,
@@ -150,7 +165,7 @@ def process_agent_response(
                     "Invalid message type. Please use 'user' or 'agent'."
                 )
 
-            return supervisor.run_supervisor(initial_state, config)
+            return GraphRunner(supervisor).run_supervisor(initial_state, config)
 
     # Run the supervisor with proper State object
     response = run_supervisor_with_graph()

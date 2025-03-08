@@ -4,37 +4,51 @@ This script tests the orchestrator to ensure it works correctly.
 """
 
 import asyncio
-from typing import Dict, Any
+from typing import Any, Dict
+
+from tw_ai_agents.agents.case_agent import CaseAgent
+from tw_ai_agents.agents.router_entrypoint import (
+    ROUTER_NODE_NAME,
+    initial_router_node,
+    initial_router_sorting_condition,
+)
+from tw_ai_agents.agents.tools.actions_retriever import AGENT_LIST
+from tw_ai_agents.agents.tools.base_agent_tools import ToolAgent
+from tw_ai_agents.agents.tools.human_tools import (
+    get_information_from_real_agent,
+)
 
 import requests
 from dotenv import load_dotenv
 from langchain import hub
 from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from langgraph.constants import END
+from langgraph.graph import START
+from langgraph.graph.state import CompiledStateGraph, StateGraph
 
-from tw_ai_agents.agents.handoff import _normalize_agent_name
+from tw_ai_agents.agents.handoff_utils import (
+    _normalize_agent_name,
+)
 from tw_ai_agents.agents.llm_models_loader import get_llm_model
-from tw_ai_agents.agents.message_types.base_message_type import (
-    State,
-)
-from tw_ai_agents.agents.tw_supervisor import TWSupervisor
-from tw_ai_agents.agents.tools.actions_retriever import AGENT_LIST
-from tw_ai_agents.agents.tools.tools import (
-    get_knowledge_info,
-)
+from tw_ai_agents.agents.message_types.base_message_type import State
 from tw_ai_agents.agents.tools.human_tools import (
-    real_human_agent_execute_actions,
     handoff_conversation_to_real_agent,
-    AskUserTool,
+    real_human_agent_execute_actions,
 )
+from tw_ai_agents.agents.tools.tools import get_knowledge_info
+from tw_ai_agents.agents.tw_supervisor import (
+    Supervisor,
+)
+from tw_ai_agents.config_handler.constants import TW_SUPERVISOR_NAME
 
 # Load environment variables
 load_dotenv()
 
 
-def get_complete_graph(
+def get_complete_graph_router_supervisor(
     model, configs: dict, memory, channel_type_id: str
-) -> TWSupervisor:
+) -> CompiledStateGraph:
     """Test the orchestrator system with a simple query."""
     # Load channel configs
     correct_channel = next(
@@ -53,20 +67,19 @@ def get_complete_graph(
         "channel_type": channel_type,
         "channel_rules": channel_rules,
     }
-    ask_user_node = AskUserTool(writer_function_input)
 
     # Load share tools
     supervisor_tools = []
     subagents_list = []
     shared_agents = [
         # Now, create a second supervisor that could potentially be called by the main supervisor
-        TWSupervisor(
+        ToolAgent(
             agents=[],
             model=model,
             tools=[get_knowledge_info],
             prompt="You are an agent specialized in knowledge information lookup.",
             state_schema=State,
-            supervisor_name="knowledge_handler",
+            name="knowledge_handler",
             description="Agent able to lookup knowledge information.",
             memory=memory,
         ),
@@ -75,6 +88,7 @@ def get_complete_graph(
     shared_tools = [
         handoff_conversation_to_real_agent,
         real_human_agent_execute_actions,
+        get_information_from_real_agent,
     ]
 
     for config in configs["caseCategories"]:
@@ -87,33 +101,34 @@ def get_complete_graph(
         for action in action_list:
             new_agent = AGENT_LIST[action["id"]]()
             agent_list_as_tools.append(
-                TWSupervisor(
+                ToolAgent(
                     agents=[],
                     model=model,
                     tools=new_agent.get_tools(),
                     prompt=new_agent.system_prompt,
                     state_schema=State,
-                    supervisor_name=f"{name}_{new_agent.node_name}",
+                    name=f"{name}_{new_agent.node_name}",
                     description=new_agent.description,
-                    dependant_agents=[ask_user_node],
                 )
             )
 
         handoff_conditions = config["handoffConditions"]["text"]
         agent_prompt = hub.pull("case_agent_initial_prompt").format(
-            instructions=instructions, handoff_conditions=handoff_conditions
+            instructions=instructions,
+            handoff_conditions=handoff_conditions,
+            channel_type=channel_type,
+            channel_rules=channel_rules,
         )
         subagents_list.append(
-            TWSupervisor(
+            CaseAgent(
                 agents=agent_list_as_tools + shared_agents,
                 tools=shared_tools,
                 model=model,
                 prompt=agent_prompt,
                 state_schema=State,
-                supervisor_name=name,
+                name=name,
                 description=description,
                 memory=memory,
-                dependant_agents=[ask_user_node],
             )
         )
 
@@ -132,18 +147,42 @@ def get_complete_graph(
         channel_rules=channel_rules,
     )
 
-    supervisor_system = TWSupervisor(
+    supervisor_system = Supervisor(
         agents=subagents_list,
         model=model,
         prompt=final_supervisor_prompt,
         state_schema=State,
-        supervisor_name="tw_supervisor",
+        supervisor_name=TW_SUPERVISOR_NAME,
         description="Agent able to handle the flow of the conversation.",
         memory=memory,
         tools=[handoff_conversation_to_real_agent],
     )
 
-    return supervisor_system
+    # Build the whole graph
+    builder = StateGraph(State)
+
+    builder.add_node(ROUTER_NODE_NAME, initial_router_node)
+    builder.add_node(
+        supervisor_system.supervisor_name,
+        supervisor_system.get_supervisor_compiled_graph(),
+    )
+    for case_agent in subagents_list:
+        builder.add_node(
+            case_agent.name, case_agent.get_supervisor_compiled_graph()
+        )
+        builder.add_edge(case_agent.name, END)
+
+    builder.add_edge(START, ROUTER_NODE_NAME)
+    builder.add_conditional_edges(
+        ROUTER_NODE_NAME, initial_router_sorting_condition
+    )
+    builder.add_edge(supervisor_system.supervisor_name, END)
+
+    complete_graph = builder.compile(
+        checkpointer=memory,
+        name="TYPEWISE_ALL_GRAPHS",
+    )
+    return complete_graph
 
 
 def get_input_configs() -> Dict[str, Any]:
@@ -180,7 +219,9 @@ if __name__ == "__main__":
         async with AsyncSqliteSaver.from_conn_string(
             "checkpoints.sqlite"
         ) as saver:
-            graph = get_complete_graph(model, get_input_configs(), memory=saver)
+            graph = get_complete_graph_router_supervisor(
+                model, get_input_configs(), memory=saver
+            )
             # Your code here
             compiled_supervisor = graph.get_supervisor_compiled_graph()
             config = {"configurable": {"thread_id": "thread-5e54334"}}
